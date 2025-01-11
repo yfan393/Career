@@ -1,0 +1,587 @@
+---
+title: "ISYE 6414B Project"
+author: "Yuanting Fan XXXX"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    code_folding: hide
+    theme: journal
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: '2'
+fontsize: 12pt
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+options(repos = "https://cran.rstudio.com/")
+```
+
+## Clean the data: handle missing values 
+
+(1) Data collection: 29 variables (monthly or quarterly frequency), 157 data points in total
+
+- Time data: Month, Date(the last day of each month of each year)
+
+- LDV (light duty vehicle) sales unit: NEV car sales, Gasoline car sales
+- Macro economy data：GDP, Durable consumption, Non durable consumption,Residential fixed investment, Nonresidential fixed investment, unemployment rate, federal effective rate,M1,M2 (we remove the M3 variable due to the data incompleteness),Per capita disposable income
+- Demographically data:Population,Percentage of employees who are middle-aged (25-55),Percentage of employees with a bachelor's degree or higher education
+- Industry specific data:Tesla model S price, Gasoline price,Electric retail price
+- Number of government new energy vehicles policies: these figures represent the incentive from the US government
+- Covid 19 period: categorical data "1" for from Jan 2020 - May 2023 (the end of the federal COVID-19 PHE declaration) , otherwise "0"
+
+(2) handling missing values
+
+- transform quarterly data into monthly data by linear interpolation
+- fill the missing values of Tesla model S price by using the previous valid price (It also makes sense because only when the company decides to change their price, the price floats)
+
+(3) we do not scale data as it will stop doing boxcox transformation
+
+
+
+```{r}
+data <- read.csv("D:/GT Master/1. Academic/Semester 1/ISYE6414/6414 Project/us market data.csv",
+                      sep=",")
+
+data$Year <- NULL
+
+data$GDP[which(is.na(data$GDP))] <- approx(data$Date, data$GDP, xout = data$Date[which(is.na(data$GDP))])$y
+
+data$Durable.goods.consumption[which(is.na(data$Durable.goods.consumption))] <- approx(data$Date, data$Durable.goods.consumption, xout = data$Date[which(is.na(data$Durable.goods.consumption))])$y
+
+data$Nondurable.goods.consumption[which(is.na(data$Nondurable.goods.consumption))] <- approx(data$Date, data$Nondurable.goods.consumption, xout = data$Date[which(is.na(data$Nondurable.goods.consumption))])$y
+
+data$Residential.fixed.Investment[which(is.na(data$Residential.fixed.Investment))] <- approx(data$Date, data$Residential.fixed.Investment, xout = data$Date[which(is.na(data$Residential.fixed.Investment))])$y
+
+data$Nonresidential.fixed.Investment[which(is.na(data$Nonresidential.fixed.Investment))] <- approx(data$Date, data$Nonresidential.fixed.Investment, xout = data$Date[which(is.na(data$Nonresidential.fixed.Investment))])$y
+
+data$Population[which(is.na(data$Population))] <- approx(data$Date, data$Population, xout = data$Date[which(is.na(data$Population))])$y
+
+data$Per.capita.disposable.income[which(is.na(data$Per.capita.disposable.income))] <- approx(data$Date, data$Per.capita.disposable.income, xout = data$Date[which(is.na(data$Per.capita.disposable.income))])$y
+
+library(tidyr)
+data <- data %>% fill(Tesla.model.S.price, .direction = "down")
+data <- data %>% fill(Electric.retail.price, .direction = "down")
+data <- data %>% fill(Population, .direction = "down")
+data <- data %>% fill(Per.capita.disposable.income, .direction = "down")
+
+```
+
+## Exploratory Data Analysis
+```{r}
+install.packages("plotly")
+library(plotly)
+
+hist(data$Total.NEV.Sales,main="",xlab="NEV.sales unit",border = "skyblue",col="orange")
+```
+
+
+```{r}
+data$formatedate <- as.Date(data$Date, origin = "1970-01-01")
+data$formatedate <- format(data$formatedate, "%Y%m")
+
+plot_ly(data = data, x = ~formatedate) %>%
+  add_lines(y = ~data$Total.NEV.Sales, name = "NEV.Sales", line = list(color = "blue")) %>%
+  add_lines(y = ~data$Gasoline.LDV.sales, name = "Gasoline.sales", line = list(color = "green"), yaxis = "y2") %>%
+  layout(
+    title = "LDV sales unit in US",
+    yaxis = list(title = "NEV.Sales", side = "left"),
+    yaxis2 = list(title = "Gasoline.sales", side = "right", overlaying = "y"),
+    xaxis = list(title = "Date")
+  )
+
+plot_ly(data = data, x = ~formatedate) %>%
+  add_lines(y = ~log(data$Total.NEV.Sales), name = "log NEV.Sales", line = list(color = "blue")) %>%
+  layout(
+    title = "log NEV.Sales unit in US",
+    xaxis = list(title = "Date")
+  )
+
+data$formatedate <- NULL
+```
+
+
+```{r}
+boxplot(data)
+
+for (i in 2:29) {  # Looping through the other 10 variables
+  plot(data[[i]], data$Total.NEV.Sales, 
+       main = paste("Plot of Total.NEV.Sales vs ", colnames(data)[i]),
+       xlab = colnames(data)[i],ylab = "Total.NEV.Sales", 
+       col = "blue", pch = 19)
+}
+# cor_matrix <- cor(data[5:22])
+# print(cor_matrix)
+```
+### Trend and Seasonlity 
+
+```{r}
+trend <- lm(data$Total.NEV.Sales~data$Date+as.factor(data$Month))
+summary(trend)
+```
+### Outlier Detection
+``` {r}
+
+detect_multiple_outliers <- function(data, start_col = 2, end_col = 29) {
+  # Store original options
+  original_options <- options()
+  
+  # Set options for better display
+  options(tibble.width = Inf)
+  options(tibble.print_max = Inf)
+  options(width = 150)
+  
+  all_results <- list()
+  
+  for (i in start_col:end_col) {
+    if (!is.numeric(data[[i]])) {
+      cat("Skipping column", names(data)[i], "as it's not numeric\n")
+      next
+    }
+    
+    x <- data[[i]]
+    var_name <- names(data)[i]
+    
+    results <- list()
+    
+    # Z-score method
+    z_scores <- scale(x)
+    results$zscore_indices <- which(abs(z_scores) > 3)
+    results$zscore_values <- x[results$zscore_indices]
+    
+    # IQR method
+    Q1 <- quantile(x, 0.25, na.rm = TRUE)
+    Q3 <- quantile(x, 0.75, na.rm = TRUE)
+    IQR <- Q3 - Q1
+    lower_bound <- Q1 - 1.5 * IQR
+    upper_bound <- Q3 + 1.5 * IQR
+    results$iqr_indices <- which(x < lower_bound | x > upper_bound)
+    results$iqr_values <- x[results$iqr_indices]
+    results$iqr_bounds <- c(lower_bound = lower_bound, upper_bound = upper_bound)
+    
+    # Modified Z-score method
+    median_x <- median(x, na.rm = TRUE)
+    mad_x <- mad(x, na.rm = TRUE)
+    modified_z_scores <- 0.6745 * (x - median_x) / mad_x
+    results$modified_zscore_indices <- which(abs(modified_z_scores) > 3.5)
+    results$modified_zscore_values <- x[results$modified_zscore_indices]
+    
+    # Create visualization
+    df_plot <- data.frame(
+      value = x,
+      y = 1
+    )
+    
+    p <- ggplot2::ggplot(df_plot, ggplot2::aes(y = factor(y), x = value)) +
+      ggplot2::geom_boxplot(outlier.color = "red", width = 0.5) +
+      ggplot2::geom_jitter(height = 0.1, alpha = 0.5, color = "blue") +
+      ggplot2::labs(title = paste("Outlier Detection for", var_name),
+                    x = var_name,
+                    y = "") +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(axis.text.y = ggplot2::element_blank(),
+                     axis.ticks.y = ggplot2::element_blank())
+    
+    results$plot <- p
+    
+    # Store results for this variable
+    all_results[[var_name]] <- results
+    
+    # Print section header
+    cat("\n================================================================\n")
+    cat("=== Variable:", var_name, "===\n")
+    cat("================================================================\n")
+    
+    # Function to print outlier values
+    print_outliers <- function(values, method_name) {
+      if (length(values) > 0) {
+        cat("\n", method_name, "\n")
+        cat("Number of outliers:", length(values), "\n")
+        cat("Outlier values:", paste(round(values, 3), collapse = ", "), "\n")
+      }
+    }
+    
+    # Print results for each method
+    cat("\nOutlier Detection Results:\n")
+    
+    # Z-score outliers
+    print_outliers(results$zscore_values, "Z-score method (|z| > 3)")
+    
+    # IQR outliers
+    cat("\nIQR method\n")
+    cat("IQR bounds: Lower =", round(lower_bound, 3), ", Upper =", round(upper_bound, 3), "\n")
+    print_outliers(results$iqr_values, "IQR outliers")
+    
+    # Modified Z-score outliers
+    print_outliers(results$modified_zscore_values, "Modified Z-score method (|modified z| > 3.5)")
+    
+    # Print summary statistics
+    cat("\nSummary Statistics:\n")
+    summary_stats <- list(
+      mean = mean(x, na.rm = TRUE),
+      median = median(x, na.rm = TRUE),
+      sd = sd(x, na.rm = TRUE),
+      Q1 = Q1,
+      Q3 = Q3
+    )
+    print(lapply(summary_stats, round, 3))
+    
+    # Display plot
+    print(results$plot)
+    cat("\n----------------------------------------------------------------\n")
+  }
+  
+  options(original_options)
+  
+  return(all_results)
+}
+
+results <- detect_multiple_outliers(data)
+```
+
+## Stepwise MLR
+```{r}
+install.packages("leaps")
+library("leaps")
+full_model <- lm(data$Total.NEV.Sales~., data = data)
+stepwise_model <- step(full_model, direction = "both", trace = 0)
+summary(stepwise_model)
+```
+
+```{r}
+library(car)
+vif(stepwise_model)
+# there is problem with multi colinearity, we should not use all of these predictors
+```
+
+```{r}
+data_stepwise <- subset(data, select = -c(M2SL,GDP,Durable.goods.consumption,Nondurable.goods.consumption,Nonresidential.fixed.Investment,ElectricPorts,Population,Residential.fixed.Investment,Per.capita.disposable.income,PCE,Percentage.of.employees.with.a.bachelor.s.degree.or.higher.education))
+data_stepwise0<-data_stepwise 
+full_model2 <- lm(Total.NEV.Sales~., data = data_stepwise)
+stepwise_model2 <- step(full_model2, direction = "both", trace = 0)
+summary(stepwise_model2)
+```
+
+```{r}
+library(car)
+vif(stepwise_model2)
+```
+
+### Autocorrelation—adding lagged values
+```{r}
+library(lmtest)
+dwtest(stepwise_model2)
+library(dplyr)
+
+residuals_lagged <- residuals(stepwise_model2)
+acf(residuals_lagged, main = "ACF of Residuals", lag.max = 10)
+# From the ACF of Residuals, the residual autocorrelation at lag orders 1, 7 and 10 is significant, so we create these lagged variables
+data_stepwise <- data_stepwise %>%
+  mutate(lagged_value1 = lag(data_stepwise$Total.NEV.Sales, n = 1),lagged_value2 = lag(data_stepwise$Total.NEV.Sales, n = 2),lagged_value3 = lag(data_stepwise$Total.NEV.Sales, n = 3))
+
+data_stepwise <- subset(data_stepwise, select = -c(PPIBM,Date))
+
+
+# test if lagged variables solve the autocorrelation problem
+lagged_model <-  lm(data_stepwise$Total.NEV.Sales~., data = data_stepwise)
+dwtest(lagged_model)
+summary(lagged_model)
+library(car)
+vif(lagged_model)
+```
+### Goodness of fit
+```{r}
+# Constant Variance Assumption: hold
+resids=rstandard(lagged_model)
+fits=lagged_model$fitted
+plot(fits,resids,xlab="Fitted values",ylab="Residuals",main="Scatterplot",col="red")
+```
+
+
+```{r}
+# Linearity Assumption: hold
+# following codes should be checked according to the variable selection results in case some of predictors are omitted or redundant
+plot(data$Covid.19[4:nrow(data)],resids,xlab="Covid.19",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Number.of.new.energy.policies[4:nrow(data)],resids,xlab="Number.of.new.energy.policies",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Gasoline.LDV.sales[4:nrow(data)],resids,xlab="Gasoline.LDV.sales",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$M1SL[4:nrow(data)],resids,xlab="M1SL",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Federal.fund.effective.rate[4:nrow(data)],resids,xlab="Federal.fund.effective.rate",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Umemployment.rate[4:nrow(data)],resids,xlab="Umemployment.rate",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Tesla.model.S.price[4:nrow(data)],resids,xlab="Tesla.model.S.price",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$BatteryCost[4:nrow(data)],xlab="BatteryCost",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Gasoline.price[4:nrow(data)],resids,xlab="Gasoline.price",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Electric.retail.price[4:nrow(data)],resids,xlab="Electric.retail.price",ylab="Residuals",main="Scatterplot",col="red")
+```
+
+
+```{r}
+# Normality Assumption: hold
+hist(resids,breaks = 30,main="",xlab="residuals",border = "skyblue",col="orange")
+qqPlot(resids)
+```
+
+
+### Goodness of fit: Some Outliers
+```{r}
+cook=cooks.distance(lagged_model)
+outlier_table <- data.frame(Standardized_Residuals=resids,Cooks_Distance = cook)
+print(outlier_table)
+plot(cook,type="h",lwd=3,col="orange",ylab="Cook's Distance",main="Cook's Distance")
+condition <- (abs(resids) > 2) & (cook > 4 / 157)
+count_rows <- sum(condition)
+count_rows/157
+```
+
+## BoxCox MLR
+```{r}
+# Box-Cox transformation
+library(MASS)
+boxcox_result <- boxcox(full_model, plotit = TRUE)
+best_lambda <- boxcox_result$x[which.max(boxcox_result$y)]
+print(best_lambda)
+```
+```{r}
+# If lambda = 0, use log transformation, otherwise use (y^lambda - 1) / lambda
+model_boxcox <- lm(((Total.NEV.Sales^best_lambda) - 1) / best_lambda ~ ., data = data)
+summary(model_boxcox)
+```
+
+
+```{r}
+library(car)
+vif(model_boxcox)
+```
+
+```{r}
+data_boxcox <- subset(data, select = -c(Date,M1SL,M2SL,GDP,Nondurable.goods.consumption,Nonresidential.fixed.Investment,ElectricPorts,Population,PPIBM,Durable.goods.consumption,Residential.fixed.Investment,Per.capita.disposable.income,Percentage.of.employees.with.a.bachelor.s.degree.or.higher.education))
+data_boxcox0<-data_boxcox
+model_boxcox2 <- lm(((Total.NEV.Sales^best_lambda) - 1) / best_lambda ~ ., data = data_boxcox)
+summary(model_boxcox2)
+```
+```{r}
+Date <- data$Date
+model_date_included <- lm(((Total.NEV.Sales^best_lambda) - 1) / best_lambda ~ . + I(Date),data = data_boxcox)
+anova_result <- anova(model_boxcox2,model_date_included)
+print(anova_result)
+## Reject the null hypothesis, which means we shouldn't keep date in the boxcox transformed model by force since it won't improve the performance of the model
+```
+
+```{r}
+library(car)
+vif(model_boxcox2)
+```
+
+### Autocorrelation
+```{r}
+library(lmtest)
+dwtest(model_boxcox2)
+
+residuals_lagged <- residuals(model_boxcox2)
+acf(residuals_lagged, main = "ACF of Residuals", lag.max = 10)
+# From the ACF of Residuals, the residual autocorrelation at lag orders 1, 2 and 3 is significant, so we create these lagged variables
+library(dplyr)
+
+data_boxcox <- data_boxcox %>%
+  mutate(
+    lagged_value1 = ((lag(Total.NEV.Sales, n = 1))^best_lambda - 1) / best_lambda,
+    lagged_value2 = ((lag(Total.NEV.Sales, n = 2))^best_lambda - 1) / best_lambda,
+    lagged_value3 = ((lag(Total.NEV.Sales, n = 3))^best_lambda - 1) / best_lambda
+  )
+# test if lagged variables solve the autocorrelation problem
+lagged_model2 <-  lm(((Total.NEV.Sales^best_lambda) - 1) / best_lambda ~ ., data = data_boxcox)
+dwtest(lagged_model2)
+summary(lagged_model2)
+library(car)
+vif(lagged_model2)
+```
+
+### Goodness of fit
+```{r}
+# Constant Variance Assumption: hold
+resids=rstandard(lagged_model2)
+fits=lagged_model2$fitted
+plot(fits,resids,xlab="Fitted values",ylab="Residuals",main="Scatterplot",col="red")
+```
+
+
+```{r}
+# Linearity Assumption: hold
+# following codes should be checked according to the variable selection results in case some of predictors are omitted or redundant
+plot(data$Month[4:nrow(data)],resids,xlab="Month",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Covid.19[4:nrow(data)],resids,xlab="Covid.19",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Number.of.new.energy.policies[4:nrow(data)],resids,xlab="Number.of.new.energy.policies",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Gasoline.LDV.sales[4:nrow(data)],resids,xlab="Gasoline.LDV.sales",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Umemployment.rate[4:nrow(data)],resids,xlab="Umemployment.rate",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Tesla.model.S.price[4:nrow(data)],resids,xlab="Tesla.model.S.price",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Percentage.of.employees.with.a.bachelor.s.degree.or.higher.education[4:nrow(data)],resids,xlab="Percentage.of.employees.with.a.bachelor.s.degree.or.higher.education",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Percentage.of.employees.who.are.middle.aged..25.55.[4:nrow(data)],resids,xlab="Percentage.of.employees.who.are.middle.aged..25.55.",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Gasoline.price[4:nrow(data)],resids,xlab="Gasoline.price",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$BatteryCost[4:nrow(data)],resids,xlab="BatteryCost",ylab="Residuals",main="Scatterplot",col="red")
+plot(data$Electric.retail.price[4:nrow(data)],resids,xlab="Electric.retail.price",ylab="Residuals",main="Scatterplot",col="red")
+```
+
+
+```{r}
+# Normality Assumption: hold
+hist(resids,breaks = 30,main="",xlab="residuals",border = "skyblue",col="orange")
+qqPlot(resids)
+```
+
+```{r}
+# Goodness of fit: Outliers
+cook=cooks.distance(lagged_model2)
+outlier_table <- data.frame(Standardized_Residuals=resids,Cooks_Distance = cook)
+print(outlier_table)
+plot(cook,type="h",lwd=3,col="orange",ylab="Cook's Distance",main="Cook's Distance")
+condition <- (abs(resids) > 2) & (cook > 4 / 157)
+count_rows <- sum(condition)
+count_rows/157
+
+# Conclusion: no need to transform the predicting variables
+
+```
+
+
+## Ridge MLR (considering the dataset has high multicoliearity)
+
+```{r}
+X <- as.matrix(data[, -which(names(data) == "Total.NEV.Sales")])
+y <- data$Total.NEV.Sales 
+library(glmnet)
+ridge_model <- glmnet(X, y, alpha = 0)
+plot(ridge_model )
+cv_ridge_model  <- cv.glmnet(X, y, alpha = 0)
+plot(cv_ridge_model )
+best_lambda2 <- cv_ridge_model$lambda.min
+print(best_lambda2)
+```
+
+
+```{r}
+final_ridge_model <- glmnet(X, y, alpha = 0, lambda = best_lambda2)
+print(final_ridge_model$beta)
+```
+
+## Poisson: not suitable (fail the goodness-of-fit test)
+```{r}
+# Poisson regression is not suitable for this data set
+poisson_model<- glm(Total.NEV.Sales~., family=poisson, data=data)
+summary(poisson_model) 
+```
+### Overall significance
+```{r}
+1-pchisq(poisson_model$null.deviance-poisson_model$deviance,38)
+```
+### Goodness-of-fit
+```{r}
+c(deviance(poisson_model),1-pchisq(deviance(poisson_model),118))
+pearres=residuals(poisson_model,type="pearson")
+pearson.tvalue=sum(pearres^2)
+c(pearson.tvalue,1-pchisq(pearson.tvalue,118))
+# conlusion: not a good fit
+```
+
+## Model Comparision - Prediction accuracy
+```{r}
+install.packages("Metrics")
+library(Metrics)  # For MAE, MAPE, RMSE
+library(glmnet)   # For ridge regression
+library(MASS)     # For stepwise regression
+library(caret)    # For cross-validation
+set.seed(123)
+
+calc_metrics <- function(predictions, actual) {
+  # Mean Squared Prediction Error (MSPE)
+  MSPE <- mean((predictions - actual)^2)
+  
+  # Mean Absolute Error (MAE)
+  MAE <- mean(abs(predictions - actual))
+  
+  # Mean Absolute Percentage Error (MAPE)
+  MAPE <- mean(abs((predictions - actual) / actual)) * 100
+  
+  # Precision Measure (PM)
+  PM <- sum((predictions - actual)^2) / sum((actual - mean(actual))^2)
+  
+  # R-squared
+  SS_res <- sum((predictions - actual)^2)  # Residual sum of squares
+  SS_tot <- sum((actual - mean(actual))^2)  # Total sum of squares
+  R_squared <- 1 - (SS_res / SS_tot)
+  
+  # Residuals
+  residuals <- actual - predictions
+  mean_residual <- mean(residuals)  # Mean of residuals
+  residual_sum_of_squares <- sum(residuals^2)  # Sum of squared residuals
+  
+  # Return all metrics as a named vector
+  return(c(MSPE = MSPE, MAE = MAE, MAPE = MAPE, PM = PM, 
+           R_squared = R_squared, Mean_Residual = mean_residual, Residual_Sum_of_Squares = residual_sum_of_squares))
+}
+
+# Cross-validation function
+cv_model <- function(model, X, Y, k = 10) {
+  folds <- createFolds(Y, k = k, list = TRUE, returnTrain = FALSE)
+  metrics <- matrix(NA, nrow = k, ncol = 7)
+  colnames(metrics) <- c("MSPE", "MAE", "MAPE", "PM", "R-squared", "Mean Residual", "Residual Sum of Squares")
+  
+ 
+  for (i in 1:k) {
+    test_index <- folds[[i]]
+    train_index <- setdiff(1:nrow(X), test_index)
+    
+    X_train <- X[train_index, , drop = FALSE]
+    Y_train <- Y[train_index]
+    X_test <- X[test_index, , drop = FALSE]
+    Y_test <- Y[test_index]
+    
+    # Train model on training data
+    if (inherits(model, "glmnet")) {
+      # Ridge regression
+      pred <- predict(model, newx = X_test)
+      pred <- pred[, 1]
+    } else if (inherits(model, "lm")) {
+      # For linear models like stepwise and boxcox
+      pred <- predict(model, newdata = data.frame(X_test))
+    }
+    
+    # Calculate performance metrics
+    metrics[i, ] <- calc_metrics(pred, Y_test)
+  }
+  
+  # Return the mean of each metric over all folds
+  colMeans(metrics)
+}
+
+stepwise_metrics_multicolinearity_corrected <- cv_model(stepwise_model2,data_stepwise0[, -1], data_stepwise0$Total.NEV.Sales)
+
+data_cv_step <-data_stepwise[4:nrow(data_stepwise),]
+stepwise_metrics_multicolinearity_autocorrelation_corrected <- cv_model(lagged_model,data_cv_step[, -1], data_cv_step$Total.NEV.Sales)
+
+boxcox_metrics_multicolinearity_corrected<-cv_model(model_boxcox2,data_boxcox0[, -1], (data_boxcox0$Total.NEV.Sales^best_lambda-1)/best_lambda)
+
+data_cv_boxcox <- data_boxcox[4:nrow(data_boxcox),]
+boxcox_metrics_multicolinearity_autocorrelation_corrected <- cv_model(lagged_model2,data_cv_boxcox[, -1], (data_cv_boxcox$Total.NEV.Sales^best_lambda-1)/best_lambda)
+
+
+ridge_metrics <- cv_model(final_ridge_model,as.matrix(data[, -1]),as.matrix(data$Total.NEV.Sales))
+
+
+cat("Stepwise multicolinearity corrected Model Metrics:", "\n")
+print(stepwise_metrics_multicolinearity_corrected )
+
+cat("Stepwise multicolinearity & autocorrelation corrected Model Metrics:", "\n")
+print(stepwise_metrics_multicolinearity_autocorrelation_corrected)
+
+cat("Box-Cox multicolinearity corrected Model Metrics:", "\n")
+print(boxcox_metrics_multicolinearity_corrected)
+
+cat("Box-Cox multicolinearity & autocorrelation corrected Model Metrics:", "\n")
+print(boxcox_metrics_multicolinearity_autocorrelation_corrected)
+
+cat("Ridge Regression Model Metrics:", "\n")
+print(ridge_metrics)
+```
+
