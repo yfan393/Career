@@ -1,0 +1,24 @@
+#!/bin/python3
+
+import subprocess
+
+PYTHON = ".venv/bin/python" #".venv/Scripts/python"
+DATAPATH = "out/dump20241011.csv"
+OUTPUTDIR = 'out/20241019/'
+CROSSVALIDATION = 5  # 0
+RANDOM_SEED = 34
+TEXT_COLS = [
+    'measure_desc',
+    'county_of_residence',
+    'clm_unique_key',
+    'cond_desc',
+]
+
+subprocess.call([
+    PYTHON, '-m', 'initial_model', DATAPATH,
+    '--output_dir', OUTPUTDIR,
+    '--exclude_columns', *TEXT_COLS,
+    '--cross_validation', str(CROSSVALIDATION),
+    '--random_seed', str(RANDOM_SEED),
+    '--use_cuda',
+])
